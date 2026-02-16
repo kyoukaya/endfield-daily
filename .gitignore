@@ -1,0 +1,7 @@
+endfield-daily
+*.exe
+.env
+.idea/
+.vscode/
+*.swp
+*~

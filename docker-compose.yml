@@ -1,0 +1,10 @@
+services:
+  endfield-daily:
+    image: ghcr.io/kyoukaya/endfield-daily:latest
+    # build: .
+    environment:
+      ACCOUNT_TOKEN: ${ACCOUNT_TOKEN}
+      SCHEDULE: "0 4 * * *"
+      # DISCORD_WEBHOOK: ${DISCORD_WEBHOOK}
+      # DISCORD_USER: ${DISCORD_USER}
+    restart: unless-stopped
