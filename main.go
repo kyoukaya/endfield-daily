@@ -83,33 +83,27 @@ func main() {
 func runOnce(tokens []string) bool {
 	discordWebhook := os.Getenv("DISCORD_WEBHOOK")
 	discordUser := os.Getenv("DISCORD_USER")
-
-	log := &notify.MessageLog{}
+	notifyNoOps := os.Getenv("NOTIFY_NO_OPS") != ""
 
 	var notifier notify.Notifier
 	if discordWebhook != "" {
 		notifier = &notify.Discord{WebhookURL: discordWebhook, UserID: discordUser}
 	}
 
+	hasError := false
 	for i, token := range tokens {
-		skport.RunAccount(token, i+1, log)
+		if err := skport.RunAccount(token, i+1, notifier, notifyNoOps); err != nil {
+			hasError = true
+		}
 		if i < len(tokens)-1 {
 			time.Sleep(1 * time.Second)
 		}
 	}
 
-	if notifier != nil {
-		if err := notifier.Send(log); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to send notification: %s\n", err)
-		} else {
-			fmt.Println("Successfully sent message to Discord webhook!")
-		}
-	}
-
-	if log.HasError {
+	if hasError {
 		fmt.Fprintln(os.Stderr, "Run completed with errors")
 	}
-	return log.HasError
+	return hasError
 }
 
 func parseTokens(raw string) []string {

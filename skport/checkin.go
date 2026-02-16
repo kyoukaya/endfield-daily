@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -12,27 +13,26 @@ import (
 )
 
 // RunAccount authenticates, fetches roles, and checks in for one account.
-func RunAccount(token string, index int, log *notify.MessageLog) error {
+func RunAccount(token string, index int, notifier notify.Notifier, notifyNoOps bool) error {
 	creds, err := Authenticate(token)
 	if err != nil {
-		log.Error(fmt.Sprintf("Account %d: %s", index, err))
+		msg := fmt.Sprintf("Account %d: %s", index, err)
+		fmt.Println(msg)
 		return err
 	}
-	log.Info(fmt.Sprintf("Account %d: obtained cred and salt", index))
+	fmt.Printf("Account %d: obtained cred and salt\n", index)
 
 	roles, err := getPlayerRoles(creds.Cred, creds.Salt)
 	if err != nil {
-		log.Error(fmt.Sprintf("Account %d: %s", index, err))
+		msg := fmt.Sprintf("Account %d: %s", index, err)
+		fmt.Println(msg)
 		return err
 	}
-	log.Info(fmt.Sprintf("Account %d: Found %d role(s)", index, len(roles)))
+	fmt.Printf("Account %d: Found %d role(s)\n", index, len(roles))
 
 	for i, role := range roles {
 		label := fmt.Sprintf("%s (Lv.%d) [%s]", role.Nickname, role.Level, role.Server)
-		err := checkInRole(creds.Cred, creds.Salt, role, label, log)
-		if err != nil {
-			log.Error(fmt.Sprintf("  → %s: %s", label, err))
-		}
+		checkInRole(creds.Cred, creds.Salt, role, label, index, notifier, notifyNoOps)
 		if i < len(roles)-1 {
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -98,11 +98,14 @@ func getPlayerRoles(cred, salt string) ([]Role, error) {
 	return roles, nil
 }
 
-func checkInRole(cred, salt string, role Role, label string, log *notify.MessageLog) error {
+func checkInRole(cred, salt string, role Role, label string, accountIndex int, notifier notify.Notifier, notifyNoOps bool) {
 	path := "/web/v1/game/endfield/attendance"
 	ts := Timestamp()
 	headers := BuildHeaders(cred, role.GameRole, ts)
 	headers.Set("Sign", ComputeSignV2(path, ts, salt))
+
+	log := &notify.MessageLog{}
+	log.Info(fmt.Sprintf("Account %d - %s", accountIndex, label))
 
 	// Check attendance status
 	req, _ := http.NewRequest("GET", AttendanceURL, nil)
@@ -110,22 +113,35 @@ func checkInRole(cred, salt string, role Role, label string, log *notify.Message
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("attendance check request failed: %w", err)
+		msg := fmt.Sprintf("  → Attendance check request failed: %s", err)
+		log.Error(msg)
+		sendNotification(log, notifier)
+		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
 	var status attendanceStatusResponse
 	if err := json.Unmarshal(body, &status); err != nil {
-		return fmt.Errorf("attendance check parse failed: %w", err)
+		msg := fmt.Sprintf("  → Attendance check parse failed: %s", err)
+		log.Error(msg)
+		sendNotification(log, notifier)
+		return
 	}
 	if status.Code != 0 {
-		return fmt.Errorf("attendance status check failed: %s", firstNonEmpty(status.Message, string(body)))
+		msg := fmt.Sprintf("  → Attendance status check failed: %s", firstNonEmpty(status.Message, string(body)))
+		log.Error(msg)
+		sendNotification(log, notifier)
+		return
 	}
 
 	if status.Data != nil && status.Data.HasToday {
-		log.Info(fmt.Sprintf("  → %s: Already checked in today", label))
-		return nil
+		log.Info("  → Already checked in today")
+		// Only notify for no-ops if explicitly enabled
+		if notifyNoOps {
+			sendNotification(log, notifier)
+		}
+		return
 	}
 
 	// Claim attendance
@@ -134,17 +150,26 @@ func checkInRole(cred, salt string, role Role, label string, log *notify.Message
 
 	claimResp, err := http.DefaultClient.Do(claimReq)
 	if err != nil {
-		return fmt.Errorf("attendance claim request failed: %w", err)
+		msg := fmt.Sprintf("  → Attendance claim request failed: %s", err)
+		log.Error(msg)
+		sendNotification(log, notifier)
+		return
 	}
 	defer claimResp.Body.Close()
 	claimBody, _ := io.ReadAll(claimResp.Body)
 
 	var claim attendanceClaimResponse
 	if err := json.Unmarshal(claimBody, &claim); err != nil {
-		return fmt.Errorf("attendance claim parse failed: %w", err)
+		msg := fmt.Sprintf("  → Attendance claim parse failed: %s", err)
+		log.Error(msg)
+		sendNotification(log, notifier)
+		return
 	}
 	if claim.Code != 0 {
-		return fmt.Errorf("claim failed: %s", firstNonEmpty(claim.Message, string(claimBody)))
+		msg := fmt.Sprintf("  → Claim failed: %s", firstNonEmpty(claim.Message, string(claimBody)))
+		log.Error(msg)
+		sendNotification(log, notifier)
+		return
 	}
 
 	var rewards []string
@@ -157,9 +182,18 @@ func checkInRole(cred, salt string, role Role, label string, log *notify.Message
 	}
 
 	if len(rewards) > 0 {
-		log.Info(fmt.Sprintf("  → %s: Checked in! Rewards: %s", label, strings.Join(rewards, ", ")))
+		log.Info(fmt.Sprintf("  → Checked in! Rewards: %s", strings.Join(rewards, ", ")))
 	} else {
-		log.Info(fmt.Sprintf("  → %s: Successfully checked in!", label))
+		log.Info("  → Successfully checked in!")
 	}
-	return nil
+	sendNotification(log, notifier)
+}
+
+func sendNotification(log *notify.MessageLog, notifier notify.Notifier) {
+	if notifier == nil {
+		return
+	}
+	if err := notifier.Send(log); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to send notification: %s\n", err)
+	}
 }
