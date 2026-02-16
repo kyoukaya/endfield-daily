@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: "0 4 * * *"
   push:
-    branches: [main]
+    branches: [master]
     tags: ["v*"]
 
 env:
@@ -27,7 +27,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
             type=sha
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
