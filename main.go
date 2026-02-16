@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -38,6 +39,21 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	healthPort := os.Getenv("HEALTH_PORT")
+	if healthPort == "" {
+		healthPort = "8080"
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	go func() {
+		fmt.Printf("Health check listening on :%s\n", healthPort)
+		if err := http.ListenAndServe(":"+healthPort, mux); err != nil {
+			fmt.Fprintf(os.Stderr, "Health server error: %s\n", err)
+		}
+	}()
 
 	fmt.Printf("Starting scheduled mode with expression: %s\n", schedule)
 	runOnce(tokens)

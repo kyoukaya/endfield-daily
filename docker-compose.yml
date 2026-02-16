@@ -1,10 +1,16 @@
 services:
   endfield-daily:
     image: ghcr.io/kyoukaya/endfield-daily:latest
-    # build: .
     environment:
       ACCOUNT_TOKEN: ${ACCOUNT_TOKEN}
       SCHEDULE: "0 4 * * *"
+      # HEALTH_PORT: "8080"
       # DISCORD_WEBHOOK: ${DISCORD_WEBHOOK}
       # DISCORD_USER: ${DISCORD_USER}
+    # healthcheck:
+    #   test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+    #   interval: 30s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 5s
     restart: unless-stopped
