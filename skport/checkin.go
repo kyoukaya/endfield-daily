@@ -40,21 +40,52 @@ func RunAccount(token string, index int, notifier notify.Notifier, notifyNoOps b
 	return nil
 }
 
+// doWithRetry executes an HTTP request created by makeReq, retrying up to
+// maxRetries times on network errors or 5xx responses using exponential backoff.
+// The makeReq factory is called on every attempt so that timestamps/signatures
+// embedded in headers are always fresh.
+func doWithRetry(makeReq func() *http.Request) ([]byte, error) {
+	const maxRetries = 3
+	baseDelay := time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := baseDelay * (1 << (attempt - 1))
+			fmt.Printf("  → Retry %d/%d after %s\n", attempt, maxRetries, delay)
+			time.Sleep(delay)
+		}
+
+		resp, err := http.DefaultClient.Do(makeReq())
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("server error HTTP %d: %s", resp.StatusCode, body)
+			continue
+		}
+		return body, nil
+	}
+	return nil, lastErr
+}
+
 func getPlayerRoles(cred, salt string) ([]Role, error) {
-	path := "/api/v1/game/player/binding"
-	ts := Timestamp()
-	headers := BuildHeaders(cred, "", ts)
-	headers.Set("Sign", ComputeSignV2(path, ts, salt))
-
-	req, _ := http.NewRequest("GET", BindingURL, nil)
-	req.Header = headers
-
-	resp, err := http.DefaultClient.Do(req)
+	body, err := doWithRetry(func() *http.Request {
+		path := "/api/v1/game/player/binding"
+		ts := Timestamp()
+		headers := BuildHeaders(cred, "", ts)
+		headers.Set("Sign", ComputeSignV2(path, ts, salt))
+		req, _ := http.NewRequest("GET", BindingURL, nil)
+		req.Header = headers
+		return req
+	})
 	if err != nil {
 		return nil, fmt.Errorf("binding request failed: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 
 	var result bindingResponse
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -99,27 +130,25 @@ func getPlayerRoles(cred, salt string) ([]Role, error) {
 }
 
 func checkInRole(cred, salt string, role Role, label string, accountIndex int, notifier notify.Notifier, notifyNoOps bool) {
-	path := "/web/v1/game/endfield/attendance"
-	ts := Timestamp()
-	headers := BuildHeaders(cred, role.GameRole, ts)
-	headers.Set("Sign", ComputeSignV2(path, ts, salt))
-
 	log := &notify.MessageLog{}
 	log.Info(fmt.Sprintf("Account %d - %s", accountIndex, label))
 
 	// Check attendance status
-	req, _ := http.NewRequest("GET", AttendanceURL, nil)
-	req.Header = headers.Clone()
-
-	resp, err := http.DefaultClient.Do(req)
+	body, err := doWithRetry(func() *http.Request {
+		path := "/web/v1/game/endfield/attendance"
+		ts := Timestamp()
+		h := BuildHeaders(cred, role.GameRole, ts)
+		h.Set("Sign", ComputeSignV2(path, ts, salt))
+		req, _ := http.NewRequest("GET", AttendanceURL, nil)
+		req.Header = h
+		return req
+	})
 	if err != nil {
 		msg := fmt.Sprintf("  → Attendance check request failed: %s", err)
 		log.Error(msg)
 		sendNotification(log, notifier)
 		return
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 
 	var status attendanceStatusResponse
 	if err := json.Unmarshal(body, &status); err != nil {
@@ -145,18 +174,21 @@ func checkInRole(cred, salt string, role Role, label string, accountIndex int, n
 	}
 
 	// Claim attendance
-	claimReq, _ := http.NewRequest("POST", AttendanceURL, nil)
-	claimReq.Header = headers.Clone()
-
-	claimResp, err := http.DefaultClient.Do(claimReq)
+	claimBody, err := doWithRetry(func() *http.Request {
+		path := "/web/v1/game/endfield/attendance"
+		ts := Timestamp()
+		h := BuildHeaders(cred, role.GameRole, ts)
+		h.Set("Sign", ComputeSignV2(path, ts, salt))
+		req, _ := http.NewRequest("POST", AttendanceURL, nil)
+		req.Header = h
+		return req
+	})
 	if err != nil {
 		msg := fmt.Sprintf("  → Attendance claim request failed: %s", err)
 		log.Error(msg)
 		sendNotification(log, notifier)
 		return
 	}
-	defer claimResp.Body.Close()
-	claimBody, _ := io.ReadAll(claimResp.Body)
 
 	var claim attendanceClaimResponse
 	if err := json.Unmarshal(claimBody, &claim); err != nil {
